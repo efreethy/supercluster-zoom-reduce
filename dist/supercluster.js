@@ -358,6 +358,32 @@ const OFFSET_PROP = 6;
 class Supercluster {
     constructor(options) {
         this.options = Object.assign(Object.create(defaultOptions), options || {});
+
+        // Wrap user's reduce to add internal zoom-aware tracking
+        const userReduce = this.options.reduce;
+        if (userReduce) {
+            this._userReduce = userReduce;
+            this.options.reduce = (acc, props, zoom) => {
+                // Call user's reduce first (may or may not use zoom param)
+                userReduce(acc, props, zoom);
+
+                // Internal zoom-aware tracking
+                acc._byZoom = acc._byZoom || Object.create(null);
+                acc._originZoom = acc._originZoom != null ? acc._originZoom : zoom;
+
+                // Convert propertyStatuses (Set or Array) to array for this zoom bucket
+                const statuses = acc.propertyStatuses;
+                const statusArray = statuses instanceof Set
+                    ? Array.from(statuses)
+                    : (Array.isArray(statuses) ? statuses : []);
+
+                // Update zoom bucket with current statuses
+                acc._byZoom[zoom] = statusArray.slice(); // copy
+
+                return acc;
+            };
+        }
+
         this.trees = new Array(this.options.maxZoom + 1);
         this.stride = this.options.reduce ? 7 : 6;
         this.clusterProps = [];
@@ -646,10 +672,15 @@ class Supercluster {
                         if (!clusterProperties) {
                             clusterProperties = this._map(data, i, true);
 
-                            if (!clusterProperties._byZoom) clusterProperties._byZoom = Object.create(null);
-                            // Always set _originZoom to current zoom level
+                            // Initialize zoom tracking and seed with origin point's statuses
+                            clusterProperties._byZoom = Object.create(null);
                             clusterProperties._originZoom = zoom;
-                            if (!clusterProperties._byZoom[zoom]) clusterProperties._byZoom[zoom] = [];
+
+                            // Seed bucket with origin point's statuses (handles Set or Array)
+                            const originStatuses = clusterProperties.propertyStatuses;
+                            clusterProperties._byZoom[zoom] = originStatuses instanceof Set
+                                ? Array.from(originStatuses)
+                                : (Array.isArray(originStatuses) ? originStatuses.slice() : []);
 
                             clusterPropIndex = this.clusterProps.length;
                             this.clusterProps.push(clusterProperties);
@@ -712,28 +743,33 @@ function getClusterJSON(data, i, clusterProps) {
 }
 
 function getClusterProperties(data, i, clusterProps) {
-    var count = data[i + OFFSET_NUM];
-    var abbrev =
+    const count = data[i + OFFSET_NUM];
+    const abbrev =
         count >= 10000 ? (Math.round(count / 1000) + 'k') :
         count >= 1000 ? ((Math.round(count / 100) / 10) + 'k') : count;
-    var propIndex = data[i + OFFSET_PROP];
-    var properties = propIndex === -1 ? {} : Object.assign({}, clusterProps[propIndex]);
+    const propIndex = data[i + OFFSET_PROP];
+    const properties = propIndex === -1 ? {} : Object.assign({}, clusterProps[propIndex]);
 
-    // Get statuses - try _byZoom[_originZoom] first, then fall back to propertyStatuses
-    var byZoom = properties._byZoom || null;
-    var originZoom = properties._originZoom;
-    var statuses =
-        byZoom && originZoom != null && Array.isArray(byZoom[originZoom])
-            ? byZoom[originZoom]
-            : (Array.isArray(properties.propertyStatuses) ? properties.propertyStatuses : undefined);
+    // Get statuses from zoom bucket, converting Set to Array for serialization
+    let statuses;
+    if (properties._byZoom && properties._originZoom != null) {
+        statuses = properties._byZoom[properties._originZoom];
+    } else if (properties.propertyStatuses) {
+        statuses = properties.propertyStatuses instanceof Set
+            ? Array.from(properties.propertyStatuses)
+            : properties.propertyStatuses;
+    }
 
-    var extra = {
+    const extra = {
         cluster: true,
-        'cluster_id': data[i + OFFSET_ID],
-        'point_count': count,
-        'point_count_abbreviated': abbrev
+        cluster_id: data[i + OFFSET_ID],
+        point_count: count,
+        point_count_abbreviated: abbrev
     };
-    if (statuses && statuses.length > 0) extra.propertyStatuses = statuses;
+
+    if (statuses && statuses.length > 0) {
+        extra.propertyStatuses = statuses;
+    }
 
     return Object.assign(properties, extra);
 }
