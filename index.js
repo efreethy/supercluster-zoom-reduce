@@ -450,9 +450,9 @@ function getClusterProperties(data, i, clusterProps) {
 
     const extra = {
         cluster: true,
-        cluster_id: data[i + OFFSET_ID],
-        point_count: count,
-        point_count_abbreviated: abbrev
+        'cluster_id': data[i + OFFSET_ID],
+        'point_count': count,
+        'point_count_abbreviated': abbrev
     };
 
     if (statuses && statuses.length > 0) {
